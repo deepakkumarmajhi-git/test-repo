@@ -1,0 +1,20 @@
+{
+  "repository": "developer/dualloop-test-repo",
+  "branch": "feature",
+  "total_commits": 1,
+  "commits": [
+    {
+      "commit_sha": "abc123sha",
+      "commit_message": "project.toml added",
+      "timestamp": "2026-06-01T17:14:28+05:30",
+      "author": "deepak kumar majhi",
+      "changes_summary": {
+        "files_added": [
+          "project.toml"
+        ],
+        "files_modified": [],
+        "files_removed": []
+      }
+    }
+  ]
+}

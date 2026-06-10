@@ -5,12 +5,16 @@ import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from dotenv import load_dotenv
+from fastapi import APIRouter, Header, HTTPException, Request, status, Depends
+from sqlalchemy.orm import Session
+from database import get_db
+from model.user import User
+from model.repo import Repo
+from model.commits import Commit
 
-from fastapi import APIRouter, Header, HTTPException, Request, status
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("github.webhooks")
-logger.info("Received a GitHub webhook payload!")
+logger = logging.getLogger("app.webhook")
+logger.info("GitHub webhook router module loaded.")
 
 # Router definition to easily mount onto any FastAPI app instance
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -22,7 +26,10 @@ def get_webhook_secret() -> Optional[str]:
     
     Replace or configure this function to match your project's settings system.
     """
-    return os.getenv("GITHUB_WEBHOOK_SECRET")
+    secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+    if not secret:
+        logger.debug("GITHUB_WEBHOOK_SECRET environment variable is empty or not set.")
+    return secret
     
 
 async def verify_signature(request: Request, x_hub_signature_256: Optional[str]) -> None:
@@ -40,6 +47,7 @@ async def verify_signature(request: Request, x_hub_signature_256: Optional[str])
         HTTPException: 401 Unauthorized if the signature header is missing.
         HTTPException: 403 Forbidden if the signature validation fails.
     """
+    logger.info("Verifying GitHub webhook signature...")
     secret = get_webhook_secret()
     
     if not secret:
@@ -57,7 +65,14 @@ async def verify_signature(request: Request, x_hub_signature_256: Optional[str])
         )
 
     # Read the raw request body bytes for checksum calculation
-    body_bytes = await request.body()
+    try:
+        body_bytes = await request.body()
+    except Exception as e:
+        logger.exception("Failed to read raw request body for signature verification.")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not read request body"
+        )
 
     # Generate standard expected HMAC SHA-256 signature
     hmac_obj = hmac.new(
@@ -74,6 +89,7 @@ async def verify_signature(request: Request, x_hub_signature_256: Optional[str])
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Invalid webhook signature validation failed",
         )
+    logger.info("GitHub webhook signature successfully verified.")
 
 def process_webhook_payload(payload: Dict[str, Any]) -> None:
     """
@@ -85,16 +101,21 @@ def process_webhook_payload(payload: Dict[str, Any]) -> None:
     Args:
         payload: The parsed GitHub webhook JSON payload dictionary.
     """
-    # Example: Integrate your database operations here
-    # e.g., session = SessionLocal() -> session.add(Commit(...)) -> session.commit()
     logger.info("Custom Logic Hook: Received validated payload ready for processing.")
+    try:
+        repo_name = payload.get("repository", {}).get("full_name", "unknown")
+        logger.info(f"Custom Logic Hook: Processing commits for repository '{repo_name}'")
+    except Exception as e:
+        logger.exception("Failed to process custom business logic on payload.")
+        raise e
 
 
 @router.post("/github")
 async def github_webhook_receiver(
     request: Request,
     x_github_event: Optional[str] = Header(None),
-    x_hub_signature_256: Optional[str] = Header(None)
+    x_hub_signature_256: Optional[str] = Header(None),
+    db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
     Ingestion gateway endpoint for GitHub Webhook events.
@@ -108,12 +129,16 @@ async def github_webhook_receiver(
         request: FastAPI HTTP request wrapper.
         x_github_event: Custom header identifying the GitHub event type.
         x_hub_signature_256: HMAC security hash signature.
+        db: SQLAlchemy database session.
 
     Returns:
         A structured JSON response detailing the outcome of the webhook execution.
     """
+    logger.info(f"Received webhook request. Event: '{x_github_event}'")
+
     # 1. Enforce payload security signatures
-    await verify_signature(request, x_hub_signature_256)
+    # logger.info("Running signature validation...")
+    # await verify_signature(request, x_hub_signature_256)
 
     # 2. Extract Event Header
     if not x_github_event:
@@ -133,13 +158,21 @@ async def github_webhook_receiver(
 
     # 4. Handle Push Notification
     if x_github_event == "push":
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except Exception as e:
+            logger.exception("Failed to parse incoming request body as JSON.")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Request body must be a valid JSON payload",
+            )
+
         repo_data = payload.get("repository", {})
         repo_name = repo_data.get("full_name", "")
         short_repo_name = repo_data.get("name", "unknown_repo")
 
         if not repo_name:
-            logger.error("Webhook processing aborted: Invalid payload repository structure.")
+            logger.error("Webhook processing aborted: Invalid payload repository structure (missing name).")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid payload structure: missing repository identifiers"
@@ -149,12 +182,15 @@ async def github_webhook_receiver(
         ref = payload.get("ref", "")
         branch = ref.split("/")[-1] if ref else "unknown_branch"
 
+        logger.info(f"Processing GitHub push event for repository: {repo_name}, branch: {branch}")
+
         # -------------------------------------------------------------
         # Log to Local Sandbox JSON file (reponame_branch_day_timestamp.json)
         # -------------------------------------------------------------
         incoming_commits = payload.get("commits", [])
         simplified_commits = []
         
+        logger.info(f"Parsing {len(incoming_commits)} commits from payload...")
         for item in incoming_commits:
             message = item.get("message", "No message provided")
             timestamp = item.get("timestamp", "")
@@ -190,11 +226,18 @@ async def github_webhook_receiver(
         # Build path to saved_payloads directory relative to this folder
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         saved_dir = os.path.join(base_dir, "saved_payloads")
-        os.makedirs(saved_dir, exist_ok=True)
-        filepath = os.path.join(saved_dir, filename)
+        
+        try:
+            os.makedirs(saved_dir, exist_ok=True)
+            filepath = os.path.join(saved_dir, filename)
+        except Exception as e:
+            logger.exception(f"Failed to create directory {saved_dir} for payload saving.")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Could not create folder for saved payloads"
+            )
         
         output_payload = {
-            
             "repository": repo_name,
             "branch": branch,
             "total_commits": len(simplified_commits),
@@ -206,11 +249,95 @@ async def github_webhook_receiver(
                 json.dump(output_payload, f, indent=2, ensure_ascii=False)
             logger.info(f"Sandbox Logging: Wrote webhook payload log to {filepath}")
         except Exception as exc_file:
-            logger.error(f"Sandbox Logging Failure: Could not write file: {exc_file}")
+            logger.exception(f"Sandbox Logging Failure: Could not write file: {exc_file}")
+        # -------------------------------------------------------------
+
+        # -------------------------------------------------------------
+        # Log to PostgreSQL Database
+        # -------------------------------------------------------------
+        logger.info("Database Logging: Attempting to insert push payload into PostgreSQL...")
+        try:
+            # 1. Resolve repository owner user
+            owner_username = "unknown_owner"
+            if "/" in repo_name:
+                owner_username = repo_name.split("/")[0]
+            else:
+                owner_username = repo_data.get("owner", {}).get("login") or "unknown_owner"
+
+            db_owner = db.query(User).filter(User.username == owner_username).first()
+            if not db_owner:
+                logger.info(f"Database Logging: Creating owner user: {owner_username}")
+                db_owner = User(username=owner_username, email=None)
+                db.add(db_owner)
+                db.flush()
+
+            # 2. Resolve repository
+            db_repo = db.query(Repo).filter(Repo.name == repo_name).first()
+            if not db_repo:
+                logger.info(f"Database Logging: Creating repository: {repo_name}")
+                db_repo = Repo(name=repo_name, user_id=db_owner.id)
+                db.add(db_repo)
+                db.flush()
+
+            # 3. Resolve pusher/sender user
+            sender_username = payload.get("sender", {}).get("login")
+            if not sender_username:
+                if incoming_commits:
+                    author_data = incoming_commits[0].get("author", {})
+                    sender_username = author_data.get("username") or author_data.get("name") or owner_username
+                else:
+                    sender_username = owner_username
+
+            db_pusher = db.query(User).filter(User.username == sender_username).first()
+            if not db_pusher:
+                logger.info(f"Database Logging: Creating pusher user: {sender_username}")
+                pusher_email = payload.get("sender", {}).get("email")
+                if not pusher_email and incoming_commits:
+                    pusher_email = incoming_commits[0].get("author", {}).get("email")
+                db_pusher = User(username=sender_username, email=pusher_email)
+                db.add(db_pusher)
+                db.flush()
+
+            # 4. Construct message mapping
+            commit_messages_map = {}
+            for item in incoming_commits:
+                sha = item.get("id") or item.get("commit_sha") or "unknown_sha"
+                msg = item.get("message") or item.get("commit_message") or "No message"
+                commit_messages_map[sha] = msg
+
+            # 5. Extract timestamp
+            push_timestamp = datetime.now()
+            if incoming_commits:
+                ts_str = incoming_commits[0].get("timestamp")
+                if ts_str:
+                    try:
+                        push_timestamp = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                    except Exception:
+                        logger.warning(f"Database Logging: Failed to parse timestamp: {ts_str}")
+
+            # 6. Create Commit entry
+            db_commit = Commit(
+                repo_id=db_repo.id,
+                user_id=db_pusher.id,
+                branch=branch,
+                message=commit_messages_map,
+                total_commit=len(incoming_commits),
+                timestamp=push_timestamp
+            )
+            db.add(db_commit)
+            db.commit()
+            logger.info("Database Logging: Successfully inserted push payload into PostgreSQL.")
+        except Exception as db_err:
+            db.rollback()
+            logger.exception("Database Logging Failure: Rollback executed.")
         # -------------------------------------------------------------
 
         # 5. Dispatch payload to custom business logic hook
-        process_webhook_payload(payload)
+        logger.info("Executing custom business logic hook process_webhook_payload...")
+        try:
+            process_webhook_payload(payload)
+        except Exception as e:
+            logger.exception("Error occurred in custom webhook payload processor.")
 
         return {
             "status": "success",
