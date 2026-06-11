@@ -20,76 +20,76 @@ logger.info("GitHub webhook router module loaded.")
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 
-def get_webhook_secret() -> Optional[str]:
-    """
-    Retrieves the webhook secret from the environment.
+# def get_webhook_secret() -> Optional[str]:
+#     """
+#     Retrieves the webhook secret from the environment.
     
-    Replace or configure this function to match your project's settings system.
-    """
-    secret = os.getenv("GITHUB_WEBHOOK_SECRET")
-    if not secret:
-        logger.debug("GITHUB_WEBHOOK_SECRET environment variable is empty or not set.")
-    return secret
+#     Replace or configure this function to match your project's settings system.
+#     """
+#     secret = os.getenv("GITHUB_WEBHOOK_SECRET")
+#     if not secret:
+#         logger.debug("GITHUB_WEBHOOK_SECRET environment variable is empty or not set.")
+#     return secret
     
 
-async def verify_signature(request: Request, x_hub_signature_256: Optional[str]) -> None:
-    """
-    Validates that the incoming request is authentic and originated from GitHub.
+# async def verify_signature(request: Request, x_hub_signature_256: Optional[str]) -> None:
+#     """
+#     Validates that the incoming request is authentic and originated from GitHub.
 
-    Computes the HMAC hex digest using the configured secret and compares it
-    with the signature provided in the headers using a constant-time comparison.
+#     Computes the HMAC hex digest using the configured secret and compares it
+#     with the signature provided in the headers using a constant-time comparison.
 
-    Args:
-        request: The raw FastAPI request object containing the body payload.
-        x_hub_signature_256: The signature header string sent by GitHub.
+#     Args:
+#         request: The raw FastAPI request object containing the body payload.
+#         x_hub_signature_256: The signature header string sent by GitHub.
 
-    Raises:
-        HTTPException: 401 Unauthorized if the signature header is missing.
-        HTTPException: 403 Forbidden if the signature validation fails.
-    """
-    logger.info("Verifying GitHub webhook signature...")
-    secret = get_webhook_secret()
+#     Raises:
+#         HTTPException: 401 Unauthorized if the signature header is missing.
+#         HTTPException: 403 Forbidden if the signature validation fails.
+#     """
+#     logger.info("Verifying GitHub webhook signature...")
+#     secret = get_webhook_secret()
     
-    if not secret:
-        logger.warning(
-            "SECURITY WARNING: GITHUB_WEBHOOK_SECRET environment variable is not set. "
-            "Skipping signature validation. DO NOT USE IN PRODUCTION."
-        )
-        return
+#     if not secret:
+#         logger.warning(
+#             "SECURITY WARNING: GITHUB_WEBHOOK_SECRET environment variable is not set. "
+#             "Skipping signature validation. DO NOT USE IN PRODUCTION."
+#         )
+#         return
 
-    if not x_hub_signature_256:
-        logger.error("Signature Validation Failed: Missing X-Hub-Signature-256 header.")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing GitHub signature header (X-Hub-Signature-256)",
-        )
+#     if not x_hub_signature_256:
+#         logger.error("Signature Validation Failed: Missing X-Hub-Signature-256 header.")
+#         raise HTTPException(
+#             status_code=status.HTTP_401_UNAUTHORIZED,
+#             detail="Missing GitHub signature header (X-Hub-Signature-256)",
+#         )
 
-    # Read the raw request body bytes for checksum calculation
-    try:
-        body_bytes = await request.body()
-    except Exception as e:
-        logger.exception("Failed to read raw request body for signature verification.")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Could not read request body"
-        )
+#     # Read the raw request body bytes for checksum calculation
+#     try:
+#         body_bytes = await request.body()
+#     except Exception as e:
+#         logger.exception("Failed to read raw request body for signature verification.")
+#         raise HTTPException(
+#             status_code=status.HTTP_400_BAD_REQUEST,
+#             detail="Could not read request body"
+#         )
 
     # Generate standard expected HMAC SHA-256 signature
-    hmac_obj = hmac.new(
-        key=secret.encode("utf-8"),
-        msg=body_bytes,
-        digestmod=hashlib.sha256
-    )
-    expected_signature = f"sha256={hmac_obj.hexdigest()}"
+    # hmac_obj = hmac.new(
+    #     key=secret.encode("utf-8"),
+    #     msg=body_bytes,
+    #     digestmod=hashlib.sha256
+    # )
+    # expected_signature = f"sha256={hmac_obj.hexdigest()}"
 
     # Perform timing-attack resistant comparison
-    if not hmac.compare_digest(expected_signature, x_hub_signature_256):
-        logger.error("Signature Validation Failed: HMAC SHA-256 signature mismatch.")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Invalid webhook signature validation failed",
-        )
-    logger.info("GitHub webhook signature successfully verified.")
+    # if not hmac.compare_digest(expected_signature, x_hub_signature_256):
+    #     logger.error("Signature Validation Failed: HMAC SHA-256 signature mismatch.")
+    #     raise HTTPException(
+    #         status_code=status.HTTP_403_FORBIDDEN,
+    #         detail="Invalid webhook signature validation failed",
+    #     )
+    # logger.info("GitHub webhook signature successfully verified.")
 
 def process_webhook_payload(payload: Dict[str, Any]) -> None:
     """
